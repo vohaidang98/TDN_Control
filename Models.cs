@@ -5,7 +5,7 @@ namespace TDNControl;
 
 public static class AppInfo
 {
-    public const string Version = "1.0.3";
+    public const string Version = "1.0.4";
     public const string Name = "TDN Control";
     public const string Company = "TDN Media";
     public const string SelfFolderName = "TDN_Control";
