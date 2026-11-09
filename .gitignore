@@ -1,0 +1,9 @@
+bin/
+obj/
+*.user
+.vs/
+Tests/bin/
+Tests/obj/
+Release*/
+# Ghi chú nội bộ/handoff, có nhắc tên app bí mật (Auto_Audio_DangVH) - không đưa lên repo công khai.
+.bangiao/

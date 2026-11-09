@@ -1,0 +1,23 @@
+<Project Sdk="Microsoft.NET.Sdk">
+  <PropertyGroup>
+    <TargetFramework>net8.0-windows</TargetFramework>
+    <UseWindowsForms>true</UseWindowsForms>
+    <Nullable>enable</Nullable>
+    <ImplicitUsings>enable</ImplicitUsings>
+    <AssemblyName>TDNControl.Tests</AssemblyName>
+    <RootNamespace>TDNControl.Tests</RootNamespace>
+    <IsPackable>false</IsPackable>
+    <IsTestProject>true</IsTestProject>
+  </PropertyGroup>
+  <ItemGroup>
+    <Compile Include="..\Models.cs" Link="Src\Models.cs" />
+    <Compile Include="..\Catalog.cs" Link="Src\Catalog.cs" />
+    <Compile Include="..\Actions.cs" Link="Src\Actions.cs" />
+    <Compile Include="..\SystemTools.cs" Link="Src\SystemTools.cs" />
+  </ItemGroup>
+  <ItemGroup>
+    <PackageReference Include="Microsoft.NET.Test.Sdk" Version="17.11.1" />
+    <PackageReference Include="xunit" Version="2.9.2" />
+    <PackageReference Include="xunit.runner.visualstudio" Version="2.8.2" />
+  </ItemGroup>
+</Project>
