@@ -7,8 +7,8 @@
     <ImplicitUsings>enable</ImplicitUsings>
     <AssemblyName>TDN_Control</AssemblyName>
     <RootNamespace>TDNControl</RootNamespace>
-    <Version>1.0.4</Version>
-    <FileVersion>1.0.4.0</FileVersion>
+    <Version>1.0.5</Version>
+    <FileVersion>1.0.5.0</FileVersion>
     <Product>TDN Control</Product>
     <Company>TDN Media</Company>
     <Copyright>© 2026 TDN Media</Copyright>

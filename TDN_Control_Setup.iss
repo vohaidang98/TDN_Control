@@ -1,8 +1,8 @@
 ﻿#define MyAppName "TDN Control"
-#define MyAppVersion "1.0.0"
+#define MyAppVersion "1.0.5"
 #define MyAppPublisher "TDN Media"
 #define MyAppExeName "TDN_Control.exe"
-#define MyAppBuildDir "Release_v1.0.0"
+#define MyAppBuildDir "Release_v1.0.5"
 
 [Setup]
 AppId={{93EBF5C6-BE9E-4E94-9CF2-CE153480FF05}
