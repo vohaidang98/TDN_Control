@@ -73,7 +73,8 @@ internal sealed class AppRow : SurfacePanel
         else { _status.Text = "○ Đang tắt"; _status.ForeColor = UiKit.Muted; }
         _tip.SetToolTip(_status, _status.Text);
 
-        _version.Text = $"Máy: {e.InstalledVersion ?? "?"} · LAN: {e.Latest?.Version ?? "lỗi"}";
+        string source = e.Latest?.DownloadUrl != null ? "GitHub" : "LAN";
+        _version.Text = $"Máy: {e.InstalledVersion ?? "?"} · {source}: {e.Latest?.Version ?? "lỗi"}";
         if (!string.IsNullOrEmpty(e.LatestError)) { _badge.Text = e.LatestError; _badge.ForeColor = UiKit.Red; }
         else if (e.HasUpdate) { _badge.Text = "CÓ BẢN MỚI"; _badge.ForeColor = UiKit.Orange; }
         else if (e.IsInstalled && e.InstalledVersion != null && e.Latest != null) { _badge.Text = "Mới nhất"; _badge.ForeColor = UiKit.Green; }

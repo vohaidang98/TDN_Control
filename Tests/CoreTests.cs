@@ -85,6 +85,50 @@ public class CatalogTempTests : IDisposable
     }
     [Fact] public void GoodVersionJsonNoError() { App("ClipMerge"); var a = Scan().Single(); Assert.Null(a.LatestError); Assert.NotNull(a.Latest); }
     [Fact] public void MissingRootReturnsEmpty() => Assert.Empty(Catalog.Scan(new ControlSettings { UpdateFolder = Path.Combine(root, "nope") }));
+
+    // ----- Quét kèm GitHub Releases (chạy được cả khi không có mạng: dòng app GitHub vẫn có, chỉ là báo lỗi bản mới) -----
+    static readonly string[] GitHubIds = { "ClipForge", "ClipMerge", "GetAudio", "RenderMusicPro" };
+
+    [Theory] [InlineData("ClipForge-Setup-1.3.1.exe", true)] [InlineData("GetAudio-4.2.1.exe", true)] [InlineData("RenderMusicPro.exe", true)]
+    [InlineData("ClipForge-Setup-1.3.1.exe.sha256", false)] [InlineData("RenderMusicPro.exe.sha256", false)] [InlineData("source.zip", false)]
+    public void GitHubExeAssetMatcher(string name, bool expected) => Assert.Equal(expected, Catalog.IsGitHubExeAsset(name));
+
+    [Fact] public async Task LanDown_GitHubAppsStillListed_LanOnlyAppsNot()
+    {
+        var r = await Catalog.ScanAsync(new ControlSettings { UpdateFolder = Path.Combine(root, "nope") }, lanReachable: false);
+        Assert.Equal(GitHubIds, r.Select(a => a.Id).ToArray());
+        Assert.DoesNotContain(r, a => a.Id is "MuseLandscapeStudio" or "TD-Browser");
+        foreach (var a in r)
+        {
+            Assert.Equal("", a.Folder);
+            if (a.Latest != null)
+            {
+                Assert.Null(a.LatestError); Assert.StartsWith("https://", a.Latest.DownloadUrl);
+                Assert.EndsWith(".exe", a.Latest.File, StringComparison.OrdinalIgnoreCase);
+                if (a.Id == "RenderMusicPro") Assert.Equal("RenderMusicPro.exe", a.Latest.File); // không lấy nhầm bộ cài _Setup_
+            }
+            else Assert.False(string.IsNullOrEmpty(a.LatestError));
+        }
+    }
+
+    [Fact] public async Task LanNewerThanGitHub_KeepsLan()
+    {
+        App("ClipMerge", "{\"version\":\"99.0.0\",\"file\":\"ClipMerge-Setup-99.0.0.exe\"}");
+        var r = await Catalog.ScanAsync(new ControlSettings { UpdateFolder = root }, lanReachable: true);
+        var a = r.Single(x => x.Id == "ClipMerge");
+        Assert.Equal("99.0.0", a.Latest!.Version); Assert.Null(a.Latest.DownloadUrl);
+        Assert.Equal(Path.Combine(root, "ClipMerge"), a.Folder);
+    }
+
+    [Fact] public async Task LanOnlyAppUnaffected_AndHiddenGitHubAppStaysHidden()
+    {
+        App("TD-Browser", "{\"version\":\"0.0.1\",\"file\":\"TD-Browser-Setup.exe\"}");
+        App("GetAudio", null, "{\"hidden\": true}");
+        var r = await Catalog.ScanAsync(new ControlSettings { UpdateFolder = root, HiddenApps = new() { "ClipForge" } }, lanReachable: true);
+        var td = r.Single(x => x.Id == "TD-Browser");
+        Assert.Equal("0.0.1", td.Latest!.Version); Assert.Null(td.Latest.DownloadUrl);
+        Assert.DoesNotContain(r, a => a.Id is "GetAudio" or "ClipForge");
+    }
 }
 
 public class CatalogRealTests
@@ -100,6 +144,23 @@ public class CatalogRealTests
             .OrderBy(n => n, StringComparer.Ordinal).ToList();
         Assert.Equal(expected, names);
         Assert.DoesNotContain(r, a => a.Id.StartsWith('_'));
+    }
+
+    /// <summary>Cần mạng: đọc thật GitHub Releases của 4 app khi LAN "không truy cập được".</summary>
+    [Fact] public async Task RealGitHub_FourAppsWithoutLan()
+    {
+        var r = await Catalog.ScanAsync(new ControlSettings { UpdateFolder = @"\\0.0.0.0\khong-co" }, lanReachable: false, refreshGitHub: true);
+        Assert.Equal(4, r.Count);
+        foreach (var a in r)
+        {
+            Assert.True(a.Latest != null, a.Id + ": " + a.LatestError);
+            Assert.NotNull(VersionUtil.Parse(a.Latest!.Version));
+            Assert.StartsWith("https://github.com/vohaidang98/", a.Latest.DownloadUrl);
+        }
+        Assert.Equal("RenderMusicPro.exe", r.Single(a => a.Id == "RenderMusicPro").Latest!.File);
+        Assert.Matches(@"^ClipForge-Setup-.*\.exe$", r.Single(a => a.Id == "ClipForge").Latest!.File);
+        Assert.Equal(64, r.Single(a => a.Id == "ClipForge").Latest!.Sha256.Length); // có asset .sha256
+        Assert.Matches(@"^GetAudio-.*\.exe$", r.Single(a => a.Id == "GetAudio").Latest!.File);
     }
 }
 

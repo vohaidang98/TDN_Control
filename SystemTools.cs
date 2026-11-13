@@ -192,9 +192,29 @@ public static class SelfUpdate
             (latest.DownloadUrl != null ? " (qua GitHub)" : " (qua LAN)"));
     }
 
-    private static readonly HttpClient Http = CreateGitHubClient();
+    private static HttpClient Http => GitHubReleases.Http;
 
-    private static HttpClient CreateGitHubClient()
+    /// <summary>Đọc bản TDN Control mới nhất từ GitHub Releases công khai — DỰ PHÒNG khi không đọc được
+    /// thư mục LAN (ví dụ máy không còn trong mạng nội bộ).</summary>
+    public static async Task<UpdateManifest?> GetLatestFromGitHubAsync(CancellationToken cancellationToken = default)
+    {
+        var latest = await GitHubReleases.GetLatestAsync("vohaidang98/TDN_Control",
+            name => string.Equals(name, AppInfo.SelfExeName, StringComparison.OrdinalIgnoreCase), cancellationToken: cancellationToken);
+        if (latest != null) latest.File = AppInfo.SelfExeName;
+        return latest;
+    }
+}
+
+/// <summary>
+/// Đọc bản mới nhất của một repo trên GitHub Releases công khai (dùng chung cho TDN Control và các app
+/// đã chuyển sang phát hành qua GitHub). Kết quả được nhớ vài phút cho mỗi repo để không vượt giới hạn
+/// 60 lượt/giờ của GitHub khi chưa đăng nhập (bảng điều khiển quét lại mỗi phút).
+/// </summary>
+public static class GitHubReleases
+{
+    internal static readonly HttpClient Http = CreateClient();
+
+    private static HttpClient CreateClient()
     {
         var client = new HttpClient { Timeout = TimeSpan.FromSeconds(15) };
         client.DefaultRequestHeaders.UserAgent.ParseAdd("TDNControl-Updater");
@@ -202,14 +222,44 @@ public static class SelfUpdate
         return client;
     }
 
-    /// <summary>Đọc bản TDN Control mới nhất từ GitHub Releases công khai — DỰ PHÒNG khi không đọc được
-    /// thư mục LAN (ví dụ máy không còn trong mạng nội bộ).</summary>
-    public static async Task<UpdateManifest?> GetLatestFromGitHubAsync(CancellationToken cancellationToken = default)
+    /// <summary>Thời gian nhớ kết quả của một repo.</summary>
+    public static readonly TimeSpan CacheTime = TimeSpan.FromMinutes(10);
+    /// <summary>Bấm "Kiểm tra lại" chỉ hỏi lại GitHub khi kết quả cũ hơn mức này.</summary>
+    private static readonly TimeSpan MinRefresh = TimeSpan.FromSeconds(30);
+
+    private sealed record CacheItem(UpdateManifest? Manifest, DateTime FetchedUtc);
+    private static readonly System.Collections.Concurrent.ConcurrentDictionary<string, CacheItem> Cache = new(StringComparer.OrdinalIgnoreCase);
+
+    /// <summary>
+    /// Bản mới nhất của repo ("chủ/tên"). isAsset chọn file cài (asset đầu tiên khớp); nếu có asset
+    /// "&lt;tên&gt;.sha256" thì lấy mã SHA-256 từ đó. Lỗi mạng/không có bản phát hành: trả về bản đọc được
+    /// lần trước (nếu có) hoặc null — không bao giờ ném lỗi.
+    /// </summary>
+    public static async Task<UpdateManifest?> GetLatestAsync(string repo, Func<string, bool> isAsset,
+        bool refresh = false, CancellationToken cancellationToken = default)
+    {
+        Cache.TryGetValue(repo, out var cached);
+        if (cached != null)
+        {
+            var age = DateTime.UtcNow - cached.FetchedUtc;
+            if (age < (refresh ? MinRefresh : CacheTime)) return Clone(cached.Manifest);
+        }
+        var fresh = await FetchAsync(repo, isAsset, cancellationToken);
+        // Hỏi lỗi (mạng, hết lượt API...) thì giữ bản đọc được lần trước, chỉ ghi nhận thời điểm để không hỏi dồn.
+        var keep = fresh ?? cached?.Manifest;
+        Cache[repo] = new CacheItem(keep, DateTime.UtcNow);
+        return Clone(keep);
+    }
+
+    private static UpdateManifest? Clone(UpdateManifest? m) => m == null ? null : new UpdateManifest
+    { Version = m.Version, File = m.File, Sha256 = m.Sha256, Notes = m.Notes, DownloadUrl = m.DownloadUrl };
+
+    private static async Task<UpdateManifest?> FetchAsync(string repo, Func<string, bool> isAsset, CancellationToken cancellationToken)
     {
         try
         {
             using var response = await Http.GetAsync(
-                "https://api.github.com/repos/vohaidang98/TDN_Control/releases/latest", cancellationToken);
+                "https://api.github.com/repos/" + repo + "/releases/latest", cancellationToken);
             if (!response.IsSuccessStatusCode) return null;
             using var doc = System.Text.Json.JsonDocument.Parse(await response.Content.ReadAsStringAsync(cancellationToken));
             var root = doc.RootElement;
@@ -218,18 +268,19 @@ public static class SelfUpdate
             if (string.IsNullOrEmpty(version) || !root.TryGetProperty("assets", out var assets) || assets.ValueKind != System.Text.Json.JsonValueKind.Array)
                 return null;
 
-            string? downloadUrl = null, sha256Url = null;
+            var all = new List<(string Name, string Url)>();
             foreach (var asset in assets.EnumerateArray())
             {
                 string name = asset.TryGetProperty("name", out var n) ? n.GetString() ?? "" : "";
                 string url = asset.TryGetProperty("browser_download_url", out var du) ? du.GetString() ?? "" : "";
-                if (string.Equals(name, AppInfo.SelfExeName, StringComparison.OrdinalIgnoreCase)) downloadUrl = url;
-                else if (string.Equals(name, AppInfo.SelfExeName + ".sha256", StringComparison.OrdinalIgnoreCase)) sha256Url = url;
+                if (name.Length > 0 && url.Length > 0) all.Add((name, url));
             }
-            if (string.IsNullOrEmpty(downloadUrl)) return null;
+            var file = all.FirstOrDefault(a => isAsset(a.Name));
+            if (string.IsNullOrEmpty(file.Url)) return null;
+            string? sha256Url = all.FirstOrDefault(a => string.Equals(a.Name, file.Name + ".sha256", StringComparison.OrdinalIgnoreCase)).Url;
 
             string sha256 = "";
-            if (sha256Url != null)
+            if (!string.IsNullOrEmpty(sha256Url))
             {
                 try
                 {
@@ -239,7 +290,7 @@ public static class SelfUpdate
                 catch { }
             }
             string notes = root.TryGetProperty("body", out var b) ? b.GetString() ?? "" : "";
-            return new UpdateManifest { Version = version, File = AppInfo.SelfExeName, Sha256 = sha256, Notes = notes, DownloadUrl = downloadUrl };
+            return new UpdateManifest { Version = version, File = file.Name, Sha256 = sha256, Notes = notes, DownloadUrl = file.Url };
         }
         catch { return null; }
     }
