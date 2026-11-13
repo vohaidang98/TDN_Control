@@ -6,18 +6,85 @@ namespace TDNControl;
 /// <summary>Đọc danh sách app từ thư mục cập nhật LAN và tìm app đã cài trên máy.</summary>
 public static class Catalog
 {
-    private sealed record Known(string Name, UpdateKind Kind, string ExeName, string Match, string? LaunchCommand = null);
+    /// <param name="GitHubRepo">"chủ/tên" trên GitHub Releases ("null" = chỉ cập nhật qua LAN).</param>
+    private sealed record Known(string Name, UpdateKind Kind, string ExeName, string Match, string? LaunchCommand = null, string? GitHubRepo = null);
 
     // App đã biết. App mới chỉ cần thêm thư mục vào CAP_NHAT (tự đoán), hoặc thêm tdn-app.json để khai báo rõ.
     private static readonly Dictionary<string, Known> KnownApps = new(StringComparer.OrdinalIgnoreCase)
     {
-        ["RenderMusicPro"] = new("Render Music Pro", UpdateKind.ReplaceExe, "RenderMusicPro.exe", "rendermusicpro"),
-        ["ClipForge"] = new("ClipForge Studio", UpdateKind.Installer, "ClipForge.exe", "clipforge"),
-        ["ClipMerge"] = new("ClipMerge", UpdateKind.Installer, "ClipMerge.exe", "clipmerge"),
-        ["GetAudio"] = new("Gen Audio", UpdateKind.Portable, "", "genaudio"),
+        ["RenderMusicPro"] = new("Render Music Pro", UpdateKind.ReplaceExe, "RenderMusicPro.exe", "rendermusicpro", GitHubRepo: "vohaidang98/RenderMusicPro"),
+        ["ClipForge"] = new("ClipForge Studio", UpdateKind.Installer, "ClipForge.exe", "clipforge", GitHubRepo: "vohaidang98/ClipForge"),
+        ["ClipMerge"] = new("ClipMerge", UpdateKind.Installer, "ClipMerge.exe", "clipmerge", GitHubRepo: "vohaidang98/ClipMerge"),
+        ["GetAudio"] = new("Gen Audio", UpdateKind.Portable, "", "genaudio", GitHubRepo: "vohaidang98/GetAudio"),
         ["MuseLandscapeStudio"] = new("Muse Landscape Studio", UpdateKind.Installer, "MuseLandscapeStudio.exe", "muselandscapestudio"),
         ["TD-Browser"] = new("TD Browser", UpdateKind.Installer, "TD Browser.exe", "tdbrowser"),
     };
+
+    /// <summary>Asset cài đặt trên GitHub: file .exe (không phải file .sha256 đi kèm).</summary>
+    internal static bool IsGitHubExeAsset(string name) =>
+        name.EndsWith(".exe", StringComparison.OrdinalIgnoreCase);
+
+    /// <summary>
+    /// Chọn asset GitHub cho một app. App kiểu thay exe (Render Music Pro) cần đúng file exe chương trình
+    /// (bản phát hành của nó có cả bộ cài _Setup_ đi kèm); app khác lấy file .exe bất kỳ (bộ cài/portable).
+    /// </summary>
+    private static Func<string, bool> GitHubAssetMatcher(Known known) =>
+        known.Kind == UpdateKind.ReplaceExe && known.ExeName.Length > 0
+            ? name => string.Equals(name, known.ExeName, StringComparison.OrdinalIgnoreCase)
+            : IsGitHubExeAsset;
+
+    /// <summary>
+    /// Quét đầy đủ: LAN (nếu đọc được) + GitHub Releases cho các app đã chuyển sang GitHub.
+    /// App có GitHub vẫn hiện (và vẫn tìm bản đã cài trên máy) kể cả khi thư mục LAN không truy cập được;
+    /// bản mới nhất lấy bản cao hơn giữa LAN và GitHub (bằng nhau thì giữ LAN). App chỉ có LAN giữ nguyên như cũ.
+    /// </summary>
+    public static async Task<List<AppEntry>> ScanAsync(ControlSettings settings, bool lanReachable, bool refreshGitHub = false,
+        CancellationToken cancellationToken = default)
+    {
+        var list = lanReachable ? Scan(settings) : new List<AppEntry>();
+        var hidden = new HashSet<string>(settings.HiddenApps ?? new(), StringComparer.OrdinalIgnoreCase);
+        var github = KnownApps.Where(k => k.Value.GitHubRepo != null && !hidden.Contains(k.Key)).ToList();
+        if (github.Count == 0) return list;
+
+        var lookups = github.Select(k => GitHubReleases.GetLatestAsync(k.Value.GitHubRepo!, GitHubAssetMatcher(k.Value), refreshGitHub, cancellationToken)).ToList();
+        var results = await Task.WhenAll(lookups);
+
+        List<Uninstall>? installed = null;
+        var added = new List<AppEntry>();
+        for (int i = 0; i < github.Count; i++)
+        {
+            string id = github[i].Key;
+            var fromGitHub = results[i];
+            var entry = list.FirstOrDefault(a => a.Id.Equals(id, StringComparison.OrdinalIgnoreCase));
+            if (entry == null)
+            {
+                // Không có version.json trên LAN (hoặc LAN không đọc được): tạo dòng chỉ dựa vào GitHub.
+                string folder = lanReachable ? Path.Combine(settings.UpdateFolder, id) : "";
+                AppOverride? over = null;
+                if (folder.Length > 0 && Directory.Exists(folder)) over = Store.ReadJson<AppOverride>(Path.Combine(folder, "tdn-app.json"));
+                else folder = "";
+                entry = new AppEntry { Id = id, Folder = folder };
+                ApplyDefinition(entry, over);
+                if (entry.Hidden) continue;
+                installed ??= ReadUninstallEntries();
+                DetectInstalled(entry, settings, installed);
+                if (fromGitHub == null) entry.LatestError = "Không đọc được bản mới (GitHub)";
+                added.Add(entry);
+            }
+            if (fromGitHub != null && (entry.Latest == null || VersionUtil.Compare(fromGitHub.Version, entry.Latest.Version) > 0))
+            {
+                entry.Latest = fromGitHub;
+                entry.LatestError = null;
+            }
+        }
+        if (added.Count > 0)
+        {
+            RefreshRunning(added);
+            list.AddRange(added);
+            list.Sort((a, b) => StringComparer.OrdinalIgnoreCase.Compare(a.Id, b.Id));
+        }
+        return list;
+    }
 
     public static List<AppEntry> Scan(ControlSettings settings)
     {

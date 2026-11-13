@@ -217,11 +217,13 @@ public sealed partial class MainForm : Form
     }
 
     // ---------- Quét ----------
-    private static ScanResult DoScan(ControlSettings s)
+    private static async Task<ScanResult> DoScanAsync(ControlSettings s, bool refreshGitHub)
     {
         bool ok = Directory.Exists(s.UpdateFolder);
-        if (!ok) return new ScanResult(new List<AppEntry>(), false, "Không truy cập được " + s.UpdateFolder, null);
-        var apps = Catalog.Scan(s);
+        // App đã chuyển sang GitHub Releases vẫn được quét (và hiện bình thường) khi LAN không truy cập được;
+        // app chỉ có LAN thì không có dòng nào, như trước.
+        var apps = await Catalog.ScanAsync(s, ok, refreshGitHub);
+        if (!ok) return new ScanResult(apps, false, "Không truy cập được " + s.UpdateFolder, null);
         UpdateManifest? self = null;
         try { self = SelfUpdate.GetLatest(s); } catch { }
         return new ScanResult(apps, true, null, self);
@@ -240,7 +242,7 @@ public sealed partial class MainForm : Form
         ScanResult res;
         try
         {
-            res = await Task.Run(() => DoScan(_settings));
+            res = await Task.Run(() => DoScanAsync(_settings, manual));
             // LAN không có bản TDN Control mới (hoặc chưa đọc được thư mục) -> thử GitHub Releases
             // công khai làm dự phòng, không thay thế LAN.
             if (res.SelfLatest == null)
@@ -316,7 +318,7 @@ public sealed partial class MainForm : Form
 
     private void UpdateEmptyState(ScanResult res)
     {
-        if (!res.FolderOk)
+        if (!res.FolderOk && (res.Apps == null || res.Apps.Count == 0))
         {
             _emptyLabel.Text = "Không truy cập được thư mục cập nhật:\n" + _settings.UpdateFolder +
                 "\n\nKiểm tra mạng LAN hoặc đổi thư mục trong Cài đặt.";
@@ -366,7 +368,10 @@ public sealed partial class MainForm : Form
         if (!string.IsNullOrEmpty(_lastError)) text += " · Lỗi: " + _lastError;
         _footerStatus.Text = text;
         _footerStatus.ForeColor = string.IsNullOrEmpty(_lastError) ? UiKit.Muted : UiKit.Orange;
-        _sourceStatus.Text = string.IsNullOrEmpty(_lastError) ? "Nguồn cập nhật LAN" : "Kiểm tra kết nối LAN";
+        bool viaGitHub = _apps.Any(a => a.Latest?.DownloadUrl != null);
+        _sourceStatus.Text = string.IsNullOrEmpty(_lastError)
+            ? (viaGitHub ? "Nguồn cập nhật LAN + GitHub" : "Nguồn cập nhật LAN")
+            : (viaGitHub ? "LAN lỗi · app GitHub vẫn kiểm tra được" : "Kiểm tra kết nối LAN");
         _sourceStatus.ForeColor = string.IsNullOrEmpty(_lastError) ? UiKit.Green : UiKit.Orange;
         _sourcePath.Text = _settings.UpdateFolder;
     }
@@ -608,7 +613,8 @@ public sealed partial class MainForm : Form
             });
         var openInstall = menu.Items.Add("Mở thư mục cài", null, (_, _) => RevealFile(app.InstalledExe));
         openInstall.Enabled = app.InstalledExe != null;
-        menu.Items.Add("Mở thư mục cập nhật", null, (_, _) => OpenFolder(app.Folder));
+        var openUpdate = menu.Items.Add("Mở thư mục cập nhật", null, (_, _) => OpenFolder(app.Folder));
+        openUpdate.Enabled = !string.IsNullOrEmpty(app.Folder);
         menu.Items.Add("Ghi chú bản mới", null, (_, _) =>
         {
             string? notes = app.Latest?.Notes;

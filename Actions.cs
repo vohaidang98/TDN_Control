@@ -1,5 +1,6 @@
 ﻿using System.ComponentModel;
 using System.Diagnostics;
+using System.Net.Http;
 using System.Security.Cryptography;
 using System.Text;
 
@@ -54,7 +55,7 @@ public static class Actions
         return Convert.ToHexString(await SHA256.HashDataAsync(stream, token)).ToLowerInvariant();
     }
 
-    /// <summary>Chép file cập nhật từ thư mục LAN về máy và kiểm tra SHA-256.</summary>
+    /// <summary>Chép file cập nhật từ thư mục LAN (hoặc tải từ GitHub nếu latest.DownloadUrl có giá trị) về máy và kiểm tra SHA-256.</summary>
     internal static async Task<string> FetchAsync(AppEntry app, IProgress<string> progress, CancellationToken token)
     {
         var latest = app.Latest ?? throw new InvalidOperationException("Không đọc được version.json của " + app.Name);
@@ -63,8 +64,10 @@ public static class Actions
         if (!SafeName.IsSafe(app.Id))
             throw new InvalidDataException("Tên thư mục app \"" + app.Id + "\" không hợp lệ, không cài.");
         string fileName = latest.File;
-        string source = Path.Combine(app.Folder, fileName);
         string dir = Path.Combine(Store.DataDir, "downloads", app.Id);
+        if (!string.IsNullOrWhiteSpace(latest.DownloadUrl))
+            return await DownloadAsync(latest, dir, progress, token);
+        string source = Path.Combine(app.Folder, fileName);
         // Đọc LAN và dọn thư mục tạm chạy nền để không treo giao diện.
         bool exists = await Task.Run(() =>
         {
@@ -88,6 +91,55 @@ public static class Actions
                 int pct = total == 0 ? 100 : (int)(done * 100 / total);
                 if (pct != lastPct && pct % 5 == 0) { lastPct = pct; progress.Report($"Đang chép {fileName}... {pct}%"); }
             }
+        }
+        if (!string.IsNullOrWhiteSpace(latest.Sha256))
+        {
+            progress.Report("Đang kiểm tra mã SHA-256...");
+            string hash = await HashAsync(target, token);
+            if (!hash.Equals(latest.Sha256.Trim(), StringComparison.OrdinalIgnoreCase))
+            {
+                try { File.Delete(target); } catch { }
+                throw new InvalidDataException("File cập nhật bị lỗi (sai mã SHA-256). Không cài.");
+            }
+        }
+        return target;
+    }
+
+    /// <summary>Tải file cập nhật từ GitHub Releases (bản đọc được qua GitHub thay vì thư mục LAN) và kiểm tra SHA-256.</summary>
+    private static async Task<string> DownloadAsync(UpdateManifest latest, string dir, IProgress<string> progress, CancellationToken token)
+    {
+        string url = latest.DownloadUrl!;
+        if (!Uri.TryCreate(url, UriKind.Absolute, out var uri) || uri.Scheme != Uri.UriSchemeHttps)
+            throw new InvalidDataException("Địa chỉ tải bản cập nhật không hợp lệ: " + url);
+        string fileName = latest.File;
+        await Task.Run(() =>
+        {
+            if (Directory.Exists(dir)) try { Directory.Delete(dir, true); } catch { }
+            Directory.CreateDirectory(dir);
+        }, token);
+        string target = Path.Combine(dir, fileName);
+        progress.Report($"Đang tải {fileName} từ GitHub...");
+        try
+        {
+            using var response = await GitHubReleases.Http.GetAsync(uri, HttpCompletionOption.ResponseHeadersRead, token);
+            response.EnsureSuccessStatusCode();
+            await using var input = await response.Content.ReadAsStreamAsync(token);
+            await using var output = new FileStream(target, FileMode.Create, FileAccess.Write, FileShare.None, 1 << 20, true);
+            var buffer = new byte[1 << 20];
+            long total = response.Content.Headers.ContentLength ?? 0, done = 0; int read, lastPct = -1;
+            while ((read = await input.ReadAsync(buffer, token)) > 0)
+            {
+                await output.WriteAsync(buffer.AsMemory(0, read), token);
+                done += read;
+                if (total <= 0) continue;
+                int pct = (int)(done * 100 / total);
+                if (pct != lastPct && pct % 5 == 0) { lastPct = pct; progress.Report($"Đang tải {fileName}... {pct}%"); }
+            }
+        }
+        catch
+        {
+            try { File.Delete(target); } catch { }
+            throw;
         }
         if (!string.IsNullOrWhiteSpace(latest.Sha256))
         {
